@@ -1,0 +1,151 @@
+#!/bin/bash
+#
+# Firejail jail manager
+# Copyright (C) 2016 Adam Bolte <abolte@systemsaviour.com>
+#
+# Contact details provided at https://systemsaviour.com/
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+
+declare -r cmd="${0##*/}"
+declare -r arg="${1##*/}"
+
+function gen_path()
+{
+    local opt_path
+
+    # Setup things we have dropped into ~/opt/<whatever>.
+    if [ -d "${HOME}/opt" ]
+    then
+        for prog_dir in $(
+            find -L "${HOME}/opt" -mindepth 1 -maxdepth 1 -type d \
+                ! -name '*.old'
+        )
+        do
+            # Make shared libraries available.
+            if [ -d "${prog_dir}/lib" ] && \
+                [ "$(find -L "${prog_dir}/lib" -mindepth 1 -maxdepth 1 \
+                    -type f \
+                    ! -name '.do_not_load' | wc -l)" -gt 0 ]
+            then
+                # Provide the ability to manually skip pulling in libraries.
+                if [ ! -f "${prog_dir}/lib/.do_not_load" ]
+                then
+                    echo "Adding ${prog_dir}"
+                    if [ -n "${LD_LIBRARY_PATH}" ]
+                    then
+                        LD_LIBRARY_PATH="${prog_dir}/lib:${LD_LIBRARY_PATH}"
+                    else
+                        LD_LIBRARY_PATH="${prog_dir}/lib"
+                    fi
+                fi
+            fi
+
+            # Add applications to the path.
+            if [ -d "${prog_dir}/bin" ]
+            then
+                if [ -n "${opt_path}" ]
+                then
+                    opt_path="${prog_dir}/bin:${opt_path}"
+                else
+                    opt_path="${prog_dir}/bin"
+                fi
+            else
+                # Some things in ~/opt are there just for shared libraries.
+                if [ "$(find -L "${prog_dir}" -maxdepth 1 \
+                    -type f -perm -u+x | wc -l)" -gt 0 ]
+                then
+                    if [ -n "${opt_path}" ]
+                    then
+                        opt_path="${prog_dir}:${opt_path}"
+                    else
+                        opt_path="${prog_dir}"
+                    fi
+                fi
+            fi
+        done
+        unset prog_dir
+
+        if [ -n "${LD_LIBRARY_PATH}" ]
+        then
+            export LD_LIBRARY_PATH="${LD_LIBRARY_PATH}"
+        fi
+        export PATH=${opt_path}:/bin:/usr/bin:/usr/games
+    else
+        # Make sure ~/bin is removed from $PATH to avoid calling
+        # ourself and generating an infinite loop.
+        export PATH=/bin:/usr/bin:/usr/games
+    fi
+}
+
+# Only print the appropriate --env argument if the environment
+# variable exists and is non-empty.
+function print_fj_env_if_present()
+{
+    local env_name="${1}"
+
+    if [ -n "${!env_name}" ]
+    then
+        echo "--env=${env_name}=${!env_name}"
+    fi
+}
+
+# Print usage information.
+if [ "${cmd}" = "jail" ] && \
+    [ -z "${arg}" -o "${arg}" = "--help" ]
+then
+    echo "Usage:"
+    echo "    ${cmd} COMMAND [-s]"
+    echo
+    echo "where:"
+    echo "    COMMAND   the command to create a jail for."
+    echo "    -s        have the command symlink to ${SHELL}."
+    exit 1
+# Invoked to create a jail
+elif [ "${cmd}" = "jail" -a -n "${arg}" ]
+then
+    mkdir -p "${HOME}/firejail/${arg}"
+    ln -sf "${cmd}" "${HOME}/bin/${arg}"
+    if [ "${2}" = "-s" ]
+    then
+        mkdir -p "${HOME}/firejail/${arg}/opt/${arg}/bin"
+        ln -sf "${SHELL}" "${HOME}/firejail/${arg}/opt/${arg}/bin/${arg}"
+        if [ ! -d "${HOME}/opt" ]
+        then
+            mkdir -p "${HOME}/opt"
+        fi
+        ln -sf "../firejail/${arg}/opt/${arg}" "${HOME}/opt/${arg}"
+    fi
+# Called as a symlink to a command we want to execute safely
+elif [[ "$(ps --pid 1 -o comm h)" =~ init|systemd ]]
+then
+    gen_path
+    profile="${HOME}/.config/firejail/${cmd}.profile"
+    if [ -f "${profile}" ]
+    then
+        firejail --profile="${profile}" --name="${cmd}" \
+            $(print_fj_env_if_present LD_LIBRARY_PATH) \
+            ${cmd} $(echo ${@} | sed 's/&/\\\&/g')
+    else
+        firejail --name="${cmd}" \
+            $(print_fj_env_if_present LD_LIBRARY_PATH) \
+            ${cmd} $(echo ${@} | sed 's/&/\\\&/g')
+    fi
+# Called from an existing jail (which probably doesn't have privileges
+# to run firejail since firejail is suid)
+else
+    gen_path
+    ${cmd} ${@}
+fi
