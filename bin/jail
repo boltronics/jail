@@ -137,11 +137,11 @@ then
     then
         firejail --profile="${profile}" --name="${cmd}" \
             $(print_fj_env_if_present LD_LIBRARY_PATH) \
-            ${cmd} $(echo ${@} | sed 's/&/\\\&/g')
+            ${cmd} ${@}
     else
         firejail --name="${cmd}" \
             $(print_fj_env_if_present LD_LIBRARY_PATH) \
-            ${cmd} $(echo ${@} | sed 's/&/\\\&/g')
+            ${cmd} ${@}
     fi
 # Called from an existing jail (which probably doesn't have privileges
 # to run firejail since firejail is suid)
